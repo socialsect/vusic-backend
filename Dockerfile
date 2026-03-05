@@ -1,8 +1,9 @@
 FROM node:20
 
-# install ffmpeg and yt-dlp from apt (no pip)
+# Install ffmpeg + pip, then get latest yt-dlp via pip (NOT apt - apt version is ancient)
 RUN apt-get update && \
-    apt-get install -y ffmpeg yt-dlp
+    apt-get install -y ffmpeg python3-pip && \
+    pip3 install --break-system-packages yt-dlp
 
 WORKDIR /app
 
