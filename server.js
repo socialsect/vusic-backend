@@ -65,7 +65,16 @@ app.get("/api/search", async (req, res) => {
   if (!q) return res.json({ items: [] })
 
   try {
-    const data = await YoutubeSearchApi.GetListByKeyword(q, false, 20, [{ type: "video" }])
+
+    const query = `"${q}"`
+
+    const data = await YoutubeSearchApi.GetListByKeyword(
+      query,
+      false,
+      20,
+      [{ type: "video" }]
+    )
+
     const items = (data.items || []).map(v => ({
       id: v.id,
       videoId: v.id,
@@ -75,7 +84,9 @@ app.get("/api/search", async (req, res) => {
       duration: v.length?.simpleText || "",
       source: "YouTube"
     }))
+
     res.json({ items })
+
   } catch (err) {
     console.error("Search error:", err)
     res.status(500).json({ items: [], error: err.message })
