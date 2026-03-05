@@ -66,7 +66,8 @@ app.get("/api/search", async (req, res) => {
 
   try {
 
-    const query = `"${q}"`
+    // force exact phrase to stop YouTube auto-correction
+    const query = `"${q}" music`
 
     const data = await YoutubeSearchApi.GetListByKeyword(
       query,
@@ -89,7 +90,7 @@ app.get("/api/search", async (req, res) => {
 
   } catch (err) {
     console.error("Search error:", err)
-    res.status(500).json({ items: [], error: err.message })
+    res.status(500).json({ items: [] })
   }
 })
 
