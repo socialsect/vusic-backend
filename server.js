@@ -1,7 +1,7 @@
 const express = require("express")
 const cors = require("cors")
-const ytsr = require("ytsr")
-const { spawn } = require("child_process")
+const YoutubeSearchApi = require("youtube-search-api")
+const { spawn, execSync } = require("child_process")
 
 const app = express()
 app.use(cors())
@@ -17,6 +17,47 @@ app.get("/", (req, res) => {
 })
 
 // =========================
+// DEBUG - check yt-dlp + ffmpeg versions
+// Visit: /api/debug/PSJzUYbpHX0
+// =========================
+app.get("/api/debug/:id", (req, res) => {
+  const id = req.params.id
+  const url = `https://www.youtube.com/watch?v=${id}`
+
+  let ytdlpVersion = "unknown"
+  let ffmpegVersion = "unknown"
+
+  try { ytdlpVersion = execSync("yt-dlp --version").toString().trim() } catch(e) { ytdlpVersion = "NOT FOUND: " + e.message }
+  try { ffmpegVersion = execSync("ffmpeg -version").toString().split("\n")[0] } catch(e) { ffmpegVersion = "NOT FOUND: " + e.message }
+
+  const yt = spawn("yt-dlp", ["-J", "--no-playlist", url])
+  let stdout = ""
+  let stderr = ""
+
+  yt.stdout.on("data", d => stdout += d.toString())
+  yt.stderr.on("data", d => stderr += d.toString())
+
+  yt.on("close", code => {
+    let audioFormats = []
+    try {
+      const info = JSON.parse(stdout)
+      audioFormats = (info.formats || [])
+        .filter(f => f.acodec && f.acodec !== "none")
+        .map(f => ({
+          format_id: f.format_id,
+          ext: f.ext,
+          acodec: f.acodec,
+          vcodec: f.vcodec,
+          abr: f.abr,
+          audioOnly: f.vcodec === "none"
+        }))
+    } catch(e) {}
+
+    res.json({ ytdlpVersion, ffmpegVersion, ytdlpExitCode: code, stderr: stderr.slice(0, 1000), audioFormats })
+  })
+})
+
+// =========================
 // SEARCH YOUTUBE
 // =========================
 app.get("/api/search", async (req, res) => {
@@ -24,22 +65,20 @@ app.get("/api/search", async (req, res) => {
   if (!q) return res.json({ items: [] })
 
   try {
-    const results = await ytsr(q, { limit: 20 })
-    const items = results.items
-      .filter(i => i.type === "video")
-      .map(v => ({
-        id: v.id,
-        videoId: v.id,
-        title: v.title,
-        channel: v.author?.name || "Unknown",
-        thumbnail: v.bestThumbnail?.url,
-        duration: v.duration,
-        source: "YouTube"
-      }))
+    const data = await YoutubeSearchApi.GetListByKeyword(q, false, 20, [{ type: "video" }])
+    const items = (data.items || []).map(v => ({
+      id: v.id,
+      videoId: v.id,
+      title: v.title,
+      channel: v.channelTitle || "Unknown",
+      thumbnail: v.thumbnail?.thumbnails?.slice(-1)[0]?.url || "",
+      duration: v.length?.simpleText || "",
+      source: "YouTube"
+    }))
     res.json({ items })
   } catch (err) {
     console.error("Search error:", err)
-    res.status(500).json({ items: [] })
+    res.status(500).json({ items: [], error: err.message })
   }
 })
 

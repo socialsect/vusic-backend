@@ -2,6 +2,6 @@
   "dependencies": {
     "cors": "^2.8.6",
     "express": "^5.2.1",
-    "ytsr": "^3.8.4"
+    "youtube-search-api": "^2.0.1"
   }
 }
