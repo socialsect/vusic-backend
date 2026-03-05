@@ -1,9 +1,8 @@
 FROM node:20
 
-# install yt-dlp and ffmpeg
+# install ffmpeg and yt-dlp
 RUN apt-get update && \
-    apt-get install -y ffmpeg python3-pip && \
-    pip install yt-dlp
+    apt-get install -y ffmpeg yt-dlp
 
 WORKDIR /app
 
