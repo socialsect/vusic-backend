@@ -1,5 +1,9 @@
 const express = require("express")
 const cors = require("cors")
+const fs = require("fs")
+const path = require("path")
+const os = require("os")
+const { v4: uuidv4 } = require("uuid")
 const YoutubeSearchApi = require("youtube-search-api")
 const { spawn, execSync } = require("child_process")
 
@@ -95,47 +99,138 @@ app.get("/api/search", async (req, res) => {
 })
 
 // =========================
-// STREAM AUDIO
+// Extend timeout for stream route (Railway 30s default)
 // =========================
-app.get("/api/stream/:id", (req, res) => {
+app.use("/api/stream", (req, res, next) => {
+  req.setTimeout(300000)
+  res.setTimeout(300000)
+  next()
+})
+
+// =========================
+// STREAM AUDIO — temp file + range support (iOS compatible)
+// quality: low (9), medium (5), high (0)
+// =========================
+// Replace ONLY the /api/stream/:id route in server.js with this:
+
+app.get("/api/stream/:id", async (req, res) => {
   const id = req.params.id
+  const quality = req.query.quality || "medium"
   const url = `https://www.youtube.com/watch?v=${id}`
 
-  const yt = spawn("yt-dlp", [
-    "-f", "bestaudio[acodec=opus]/bestaudio[acodec=vorbis]/bestaudio",
-    "--extract-audio",
-    "--audio-format", "mp3",
-    "--audio-quality", "5",
-    "--no-playlist",
-    "-o", "-",
-    "--quiet",
-    url
-  ])
+  // Format selection based on quality:
+  // high   → 251 (opus webm ~144kbps) or 140 (m4a ~128kbps)
+  // medium → 140 (m4a ~128kbps) — best iOS compatible format
+  // low    → 139 (m4a ~48kbps)
+  const formatMap = {
+    high:   "251/140/bestaudio[acodec=opus]/bestaudio",
+    medium: "140/139/bestaudio[ext=m4a]/bestaudio",
+    low:    "139/140/worstaudio",
+  }
+  const format = formatMap[quality] || formatMap.medium
 
-  res.setHeader("Content-Type", "audio/mpeg")
-  res.setHeader("Transfer-Encoding", "chunked")
-  res.setHeader("Cache-Control", "no-cache")
+  const tmpBase = path.join(os.tmpdir(), `vusic_${id}_${uuidv4()}`)
+  // Let yt-dlp pick the extension by using %(ext)s
+  const tmpTemplate = `${tmpBase}.%(ext)s`
 
-  yt.stdout.pipe(res)
+  try {
+    // Step 1: download to temp file (no conversion = much faster)
+    const actualFile = await new Promise((resolve, reject) => {
+      const yt = spawn("yt-dlp", [
+        "-f", format,
+        "--no-playlist",
+        "--no-part",
+        "--no-warnings",
+        "-o", tmpTemplate,
+        "--quiet",
+        url
+      ])
 
-  yt.stderr.on("data", d => console.error("[yt-dlp]", d.toString()))
+      let stderrLog = ""
+      yt.stderr.on("data", d => {
+        stderrLog += d.toString()
+        console.error("[yt-dlp]", d.toString())
+      })
 
-  yt.on("error", err => {
-    console.error("spawn error:", err)
-    if (!res.headersSent) res.status(500).end()
-  })
+      yt.on("close", code => {
+        if (code !== 0) {
+          return reject(new Error(`yt-dlp failed (code ${code}): ${stderrLog}`))
+        }
+        // Find the actual downloaded file (could be .m4a or .webm)
+        const exts = ["m4a", "webm", "opus", "mp3", "ogg"]
+        for (const ext of exts) {
+          const candidate = `${tmpBase}.${ext}`
+          if (fs.existsSync(candidate)) return resolve(candidate)
+        }
+        reject(new Error("Downloaded file not found"))
+      })
 
-  yt.on("close", code => {
-    console.log("yt-dlp exited with code:", code)
-    res.end()
-  })
+      yt.on("error", reject)
+    })
 
-  req.on("close", () => yt.kill("SIGKILL"))
+    // Step 2: verify file
+    const stat = fs.statSync(actualFile)
+    if (stat.size === 0) throw new Error("Downloaded file is empty")
+
+    // Step 3: determine correct MIME type
+    const ext = path.extname(actualFile).slice(1)
+    const mimeMap = {
+      m4a:  "audio/mp4",
+      webm: "audio/webm; codecs=opus",
+      opus: "audio/ogg; codecs=opus",
+      mp3:  "audio/mpeg",
+      ogg:  "audio/ogg",
+    }
+    const mimeType = mimeMap[ext] || "audio/mp4"
+
+    // Step 4: serve with range support
+    const fileSize = stat.size
+    const range = req.headers.range
+
+    if (range) {
+      const parts = range.replace(/bytes=/, "").split("-")
+      const start = parseInt(parts[0], 10)
+      const end = parts[1] && parts[1] !== ""
+        ? parseInt(parts[1], 10)
+        : fileSize - 1
+      const chunkSize = end - start + 1
+
+      res.writeHead(206, {
+        "Content-Range":  `bytes ${start}-${end}/${fileSize}`,
+        "Accept-Ranges":  "bytes",
+        "Content-Length": chunkSize,
+        "Content-Type":   mimeType,
+      })
+      const stream = fs.createReadStream(actualFile, { start, end })
+      stream.pipe(res)
+      stream.on("error", () => res.end())
+    } else {
+      res.writeHead(200, {
+        "Content-Length": fileSize,
+        "Content-Type":   mimeType,
+        "Accept-Ranges":  "bytes",
+      })
+      const stream = fs.createReadStream(actualFile)
+      stream.pipe(res)
+      stream.on("error", () => res.end())
+    }
+
+    // Step 5: cleanup
+    const cleanup = () => fs.unlink(actualFile, () => {})
+    res.on("finish", cleanup)
+    res.on("close", cleanup)
+
+  } catch (err) {
+    console.error("Stream error:", err.message)
+    if (!res.headersSent) res.status(500).json({ error: err.message })
+  }
 })
 
 // =========================
 // START SERVER
 // =========================
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Vusic server running on port ${PORT}`)
 })
+server.timeout = 300000
+server.keepAliveTimeout = 300000
