@@ -212,15 +212,35 @@ app.get("/api/search", async (req, res) => {
       [{ type: "video" }]
     )
 
-    const items = (data.items || []).map(v => ({
-      id: v.id,
-      videoId: v.id,
-      title: v.title,
-      channel: v.channelTitle || "Unknown",
-      thumbnail: v.thumbnail?.thumbnails?.slice(-1)[0]?.url || "",
-      duration: v.length?.simpleText || "",
-      source: "YouTube"
-    }))
+    // Parse duration string (e.g. "3:45", "1:02:30") to seconds for filtering
+    function parseDurationSeconds(str) {
+      if (!str || typeof str !== "string") return null
+      const parts = str.trim().split(":").map(p => parseInt(p, 10))
+      if (parts.some(n => isNaN(n))) return null
+      if (parts.length === 1) return parts[0]
+      if (parts.length === 2) return parts[0] * 60 + parts[1]
+      if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2]
+      return null
+    }
+
+    const SONG_MIN_SEC = 60
+    const SONG_MAX_SEC = 20 * 60
+
+    const items = (data.items || [])
+      .map(v => ({
+        id: v.id,
+        videoId: v.id,
+        title: v.title,
+        channel: v.channelTitle || "Unknown",
+        thumbnail: v.thumbnail?.thumbnails?.slice(-1)[0]?.url || "",
+        duration: v.length?.simpleText || "",
+        source: "YouTube"
+      }))
+      .filter((item) => {
+        const sec = parseDurationSeconds(item.duration)
+        if (sec === null) return true
+        return sec >= SONG_MIN_SEC && sec <= SONG_MAX_SEC
+      })
 
     res.json({ items })
 
